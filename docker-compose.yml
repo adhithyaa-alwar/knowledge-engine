@@ -1,0 +1,16 @@
+# docker-compose.yml
+#
+# Docker Compose lets you run your app with a single command: docker-compose up
+# It handles building the image, setting environment variables, and mapping ports.
+# As your project grows, you'd add other services here (like a database or Redis).
+
+services:
+  web:
+    build: .                        # Build using the Dockerfile in this folder
+    ports:
+      - "5000:5000"                 # Map port 5000 on your machine to port 5000 in the container
+    env_file:
+      - .env                        # Load your GROQ_API_KEY from the .env file
+    volumes:
+      - .:/app                      # Mount your local folder into the container
+                                    # This means code changes reflect instantly without rebuilding
