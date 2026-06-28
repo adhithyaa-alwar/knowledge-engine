@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Wiki Q&A</title>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Inter:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #0f1117;
+      --surface:   #181c27;
+      --border:    #2a2f3e;
+      --accent:    #5b8cf7;
+      --accent-dim:#2a3a6e;
+      --text:      #e8eaf0;
+      --muted:     #7a80a0;
+      --answer-bg: #131720;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Inter', sans-serif;
+      font-size: 15px;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 48px 16px 80px;
+    }
+
+    header {
+      text-align: center;
+      margin-bottom: 48px;
+    }
+
+    header h1 {
+      font-family: 'Instrument Serif', serif;
+      font-size: clamp(2rem, 5vw, 3.2rem);
+      font-weight: 400;
+      letter-spacing: -0.5px;
+      color: var(--text);
+      line-height: 1.1;
+    }
+
+    header h1 em {
+      font-style: italic;
+      color: var(--accent);
+    }
+
+    header p {
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 28px;
+      width: 100%;
+      max-width: 680px;
+      margin-bottom: 20px;
+    }
+
+    .card-label {
+      font-size: 11px;
+      font-weight: 500;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 12px;
+    }
+
+    .search-row {
+      display: flex;
+      gap: 10px;
+    }
+
+    input[type="text"] {
+      flex: 1;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 14px;
+      color: var(--text);
+      font-family: 'Inter', sans-serif;
+      font-size: 14px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+
+    input[type="text"]:focus {
+      border-color: var(--accent);
+    }
+
+    input[type="text"]::placeholder {
+      color: var(--muted);
+    }
+
+    button {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      padding: 10px 18px;
+      font-family: 'Inter', sans-serif;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: opacity 0.15s;
+      white-space: nowrap;
+    }
+
+    button:hover { opacity: 0.85; }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    #results-list {
+      margin-top: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .result-item {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 14px;
+      cursor: pointer;
+      font-size: 14px;
+      transition: border-color 0.15s, background 0.15s;
+    }
+
+    .result-item:hover {
+      border-color: var(--accent);
+      background: var(--accent-dim);
+    }
+
+    .result-item.selected {
+      border-color: var(--accent);
+      background: var(--accent-dim);
+      color: #fff;
+    }
+
+    #selected-page {
+      display: none;
+      margin-top: 12px;
+      font-size: 13px;
+      color: var(--accent);
+      font-weight: 500;
+    }
+
+    #question-card { display: none; }
+
+    #qa-history {
+      width: 100%;
+      max-width: 680px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .qa-pair {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+
+    .qa-question {
+      padding: 14px 20px;
+      font-size: 14px;
+      font-weight: 500;
+      border-bottom: 1px solid var(--border);
+      color: var(--muted);
+    }
+
+    .qa-question span {
+      color: var(--text);
+    }
+
+    .qa-answer {
+      padding: 16px 20px;
+      font-size: 14px;
+      line-height: 1.7;
+      background: var(--answer-bg);
+      white-space: pre-wrap;
+    }
+
+    .qa-answer.loading {
+      color: var(--muted);
+      font-style: italic;
+    }
+
+    .qa-answer.error {
+      color: #f87171;
+    }
+
+    .dot-pulse {
+      display: inline-block;
+      animation: pulse 1.2s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.3; }
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <h1>Ask <em>anything</em> about Wikipedia</h1>
+    <p>Powered by Groq — fast, free, and no credit card required.</p>
+  </header>
+
+  <!-- Step 1: Search -->
+  <div class="card">
+    <div class="card-label">Choose a Wikipedia page</div>
+    <div class="search-row">
+      <input type="text" id="search-input" placeholder="Search Wikipedia..." />
+      <button id="search-btn">Search</button>
+    </div>
+    <div id="results-list"></div>
+    <div id="selected-page"></div>
+  </div>
+
+  <!-- Step 2: Ask -->
+  <div class="card" id="question-card">
+    <div class="card-label">Ask a question</div>
+    <div class="search-row">
+      <input type="text" id="question-input" placeholder="What would you like to know?" />
+      <button id="ask-btn">Ask</button>
+    </div>
+  </div>
+
+  <!-- Q&A history -->
+  <div id="qa-history"></div>
+
+  <script>
+    let selectedPage = null;
+
+    const searchInput = document.getElementById('search-input');
+    const searchBtn = document.getElementById('search-btn');
+    const resultsList = document.getElementById('results-list');
+    const selectedPageEl = document.getElementById('selected-page');
+    const questionCard = document.getElementById('question-card');
+    const questionInput = document.getElementById('question-input');
+    const askBtn = document.getElementById('ask-btn');
+    const qaHistory = document.getElementById('qa-history');
+
+    // Search on Enter key
+    searchInput.addEventListener('keydown', e => {
+      if (e.key === 'Enter') searchBtn.click();
+    });
+
+    questionInput.addEventListener('keydown', e => {
+      if (e.key === 'Enter') askBtn.click();
+    });
+
+    searchBtn.addEventListener('click', async () => {
+      const query = searchInput.value.trim();
+      if (!query) return;
+
+      searchBtn.disabled = true;
+      searchBtn.textContent = 'Searching...';
+      resultsList.innerHTML = '';
+      selectedPage = null;
+      selectedPageEl.style.display = 'none';
+      questionCard.style.display = 'none';
+
+      try {
+        const res = await fetch('/search', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query })
+        });
+        const data = await res.json();
+
+        if (data.error) {
+          resultsList.innerHTML = `<div style="color:#f87171;font-size:13px">${data.error}</div>`;
+          return;
+        }
+
+        data.results.forEach(title => {
+          const item = document.createElement('div');
+          item.className = 'result-item';
+          item.textContent = title;
+          item.addEventListener('click', () => selectPage(title, item));
+          resultsList.appendChild(item);
+        });
+
+      } catch (err) {
+        resultsList.innerHTML = `<div style="color:#f87171;font-size:13px">Search failed. Is the server running?</div>`;
+      } finally {
+        searchBtn.disabled = false;
+        searchBtn.textContent = 'Search';
+      }
+    });
+
+    function selectPage(title, el) {
+      document.querySelectorAll('.result-item').forEach(i => i.classList.remove('selected'));
+      el.classList.add('selected');
+      selectedPage = title;
+      selectedPageEl.textContent = `Using: ${title}`;
+      selectedPageEl.style.display = 'block';
+      questionCard.style.display = 'block';
+      questionInput.focus();
+    }
+
+    askBtn.addEventListener('click', async () => {
+      const question = questionInput.value.trim();
+      if (!question || !selectedPage) return;
+
+      askBtn.disabled = true;
+      askBtn.textContent = 'Thinking...';
+      questionInput.value = '';
+
+      // Add Q&A pair to history
+      const pair = document.createElement('div');
+      pair.className = 'qa-pair';
+      pair.innerHTML = `
+        <div class="qa-question">Q: <span>${escapeHtml(question)}</span></div>
+        <div class="qa-answer loading"><span class="dot-pulse">Thinking</span>...</div>
+      `;
+      qaHistory.insertBefore(pair, qaHistory.firstChild);
+
+      const answerEl = pair.querySelector('.qa-answer');
+
+      try {
+        const res = await fetch('/ask', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ page: selectedPage, question })
+        });
+        const data = await res.json();
+
+        answerEl.classList.remove('loading');
+        if (data.error) {
+          answerEl.classList.add('error');
+          answerEl.textContent = `Error: ${data.error}`;
+        } else {
+          answerEl.textContent = data.answer;
+        }
+      } catch (err) {
+        answerEl.classList.remove('loading');
+        answerEl.classList.add('error');
+        answerEl.textContent = 'Request failed. Is the server running?';
+      } finally {
+        askBtn.disabled = false;
+        askBtn.textContent = 'Ask';
+      }
+    });
+
+    function escapeHtml(str) {
+      return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    }
+  </script>
+</body>
+</html>
