@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Wiki Q&A</title>
+  <title>Knowledge Engine</title>
   <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Inter:wght@400;500&display=swap" rel="stylesheet" />
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -28,33 +28,64 @@
       display: flex;
       flex-direction: column;
       align-items: center;
-      padding: 48px 16px 80px;
+      padding: 0 16px 80px;
     }
+
+    /* Top nav */
+    nav {
+      width: 100%;
+      max-width: 680px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 16px 0;
+      margin-bottom: 32px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    nav .brand {
+      font-family: 'Instrument Serif', serif;
+      font-size: 1.2rem;
+      font-weight: 400;
+    }
+
+    nav .brand em { font-style: italic; color: var(--accent); }
+
+    nav .user-info {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    nav .logout {
+      font-size: 13px;
+      color: var(--muted);
+      text-decoration: none;
+      border: 1px solid var(--border);
+      padding: 5px 12px;
+      border-radius: 6px;
+      transition: color 0.15s, border-color 0.15s;
+    }
+
+    nav .logout:hover { color: var(--text); border-color: var(--text); }
 
     header {
       text-align: center;
-      margin-bottom: 48px;
+      margin-bottom: 40px;
     }
 
     header h1 {
       font-family: 'Instrument Serif', serif;
       font-size: clamp(2rem, 5vw, 3.2rem);
       font-weight: 400;
-      letter-spacing: -0.5px;
       color: var(--text);
       line-height: 1.1;
     }
 
-    header h1 em {
-      font-style: italic;
-      color: var(--accent);
-    }
-
-    header p {
-      margin-top: 10px;
-      color: var(--muted);
-      font-size: 14px;
-    }
+    header h1 em { font-style: italic; color: var(--accent); }
+    header p { margin-top: 10px; color: var(--muted); font-size: 14px; }
 
     .card {
       background: var(--surface);
@@ -75,10 +106,7 @@
       margin-bottom: 12px;
     }
 
-    .search-row {
-      display: flex;
-      gap: 10px;
-    }
+    .search-row { display: flex; gap: 10px; }
 
     input[type="text"] {
       flex: 1;
@@ -93,13 +121,8 @@
       transition: border-color 0.15s;
     }
 
-    input[type="text"]:focus {
-      border-color: var(--accent);
-    }
-
-    input[type="text"]::placeholder {
-      color: var(--muted);
-    }
+    input[type="text"]:focus { border-color: var(--accent); }
+    input[type="text"]::placeholder { color: var(--muted); }
 
     button {
       background: var(--accent);
@@ -118,12 +141,7 @@
     button:hover { opacity: 0.85; }
     button:disabled { opacity: 0.4; cursor: not-allowed; }
 
-    #results-list {
-      margin-top: 14px;
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-    }
+    #results-list { margin-top: 14px; display: flex; flex-direction: column; gap: 6px; }
 
     .result-item {
       background: var(--bg);
@@ -135,34 +153,13 @@
       transition: border-color 0.15s, background 0.15s;
     }
 
-    .result-item:hover {
-      border-color: var(--accent);
-      background: var(--accent-dim);
-    }
+    .result-item:hover { border-color: var(--accent); background: var(--accent-dim); }
+    .result-item.selected { border-color: var(--accent); background: var(--accent-dim); color: #fff; }
 
-    .result-item.selected {
-      border-color: var(--accent);
-      background: var(--accent-dim);
-      color: #fff;
-    }
-
-    #selected-page {
-      display: none;
-      margin-top: 12px;
-      font-size: 13px;
-      color: var(--accent);
-      font-weight: 500;
-    }
-
+    #selected-page { display: none; margin-top: 12px; font-size: 13px; color: var(--accent); font-weight: 500; }
     #question-card { display: none; }
 
-    #qa-history {
-      width: 100%;
-      max-width: 680px;
-      display: flex;
-      flex-direction: column;
-      gap: 16px;
-    }
+    #qa-history { width: 100%; max-width: 680px; display: flex; flex-direction: column; gap: 16px; }
 
     .qa-pair {
       background: var(--surface);
@@ -179,8 +176,14 @@
       color: var(--muted);
     }
 
-    .qa-question span {
-      color: var(--text);
+    .qa-question span { color: var(--text); }
+    .qa-question .page-tag {
+      font-size: 11px;
+      background: var(--accent-dim);
+      color: var(--accent);
+      padding: 2px 8px;
+      border-radius: 4px;
+      margin-left: 8px;
     }
 
     .qa-answer {
@@ -191,31 +194,57 @@
       white-space: pre-wrap;
     }
 
-    .qa-answer.loading {
+    .qa-answer.loading { color: var(--muted); font-style: italic; }
+    .qa-answer.error { color: #f87171; }
+
+    /* History sidebar toggle */
+    .history-toggle {
+      width: 100%;
+      max-width: 680px;
+      margin-bottom: 16px;
+      text-align: right;
+    }
+
+    .history-toggle button {
+      background: transparent;
+      border: 1px solid var(--border);
       color: var(--muted);
-      font-style: italic;
+      font-size: 13px;
+      padding: 6px 14px;
     }
 
-    .qa-answer.error {
-      color: #f87171;
+    .history-toggle button:hover { color: var(--text); border-color: var(--text); opacity: 1; }
+
+    .history-item {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 14px 18px;
+      font-size: 13px;
     }
 
-    .dot-pulse {
-      display: inline-block;
-      animation: pulse 1.2s infinite;
-    }
+    .history-item .h-page { color: var(--accent); font-weight: 500; margin-bottom: 4px; }
+    .history-item .h-question { color: var(--text); margin-bottom: 6px; }
+    .history-item .h-answer { color: var(--muted); line-height: 1.6; }
+    .history-item .h-time { color: var(--muted); font-size: 11px; margin-top: 8px; }
 
-    @keyframes pulse {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.3; }
-    }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+    .dot-pulse { display: inline-block; animation: pulse 1.2s infinite; }
   </style>
 </head>
 <body>
 
+  <nav>
+    <div class="brand">Knowledge <em>Engine</em></div>
+    <div class="user-info">
+      <span>{{ email }}</span>
+      <a class="logout" href="/logout">Sign out</a>
+    </div>
+  </nav>
+
   <header>
-    <h1>Ask <em>anything</em> about Wikipedia</h1>
-    <p>Powered by Groq — fast, free, and no credit card required.</p>
+    <h1>Ask <em>anything</em></h1>
+    <p>Powered by Groq — your history is saved automatically.</p>
   </header>
 
   <!-- Step 1: Search -->
@@ -238,11 +267,17 @@
     </div>
   </div>
 
-  <!-- Q&A history -->
+  <!-- History toggle -->
+  <div class="history-toggle">
+    <button onclick="toggleHistory()">Show my history</button>
+  </div>
+
+  <!-- Q&A / History -->
   <div id="qa-history"></div>
 
   <script>
     let selectedPage = null;
+    let showingHistory = false;
 
     const searchInput = document.getElementById('search-input');
     const searchBtn = document.getElementById('search-btn');
@@ -253,19 +288,12 @@
     const askBtn = document.getElementById('ask-btn');
     const qaHistory = document.getElementById('qa-history');
 
-    // Search on Enter key
-    searchInput.addEventListener('keydown', e => {
-      if (e.key === 'Enter') searchBtn.click();
-    });
-
-    questionInput.addEventListener('keydown', e => {
-      if (e.key === 'Enter') askBtn.click();
-    });
+    searchInput.addEventListener('keydown', e => { if (e.key === 'Enter') searchBtn.click(); });
+    questionInput.addEventListener('keydown', e => { if (e.key === 'Enter') askBtn.click(); });
 
     searchBtn.addEventListener('click', async () => {
       const query = searchInput.value.trim();
       if (!query) return;
-
       searchBtn.disabled = true;
       searchBtn.textContent = 'Searching...';
       resultsList.innerHTML = '';
@@ -280,12 +308,10 @@
           body: JSON.stringify({ query })
         });
         const data = await res.json();
-
         if (data.error) {
           resultsList.innerHTML = `<div style="color:#f87171;font-size:13px">${data.error}</div>`;
           return;
         }
-
         data.results.forEach(title => {
           const item = document.createElement('div');
           item.className = 'result-item';
@@ -293,9 +319,8 @@
           item.addEventListener('click', () => selectPage(title, item));
           resultsList.appendChild(item);
         });
-
       } catch (err) {
-        resultsList.innerHTML = `<div style="color:#f87171;font-size:13px">Search failed. Is the server running?</div>`;
+        resultsList.innerHTML = `<div style="color:#f87171;font-size:13px">Search failed.</div>`;
       } finally {
         searchBtn.disabled = false;
         searchBtn.textContent = 'Search';
@@ -315,16 +340,18 @@
     askBtn.addEventListener('click', async () => {
       const question = questionInput.value.trim();
       if (!question || !selectedPage) return;
-
       askBtn.disabled = true;
       askBtn.textContent = 'Thinking...';
       questionInput.value = '';
+      showingHistory = false;
 
-      // Add Q&A pair to history
       const pair = document.createElement('div');
       pair.className = 'qa-pair';
       pair.innerHTML = `
-        <div class="qa-question">Q: <span>${escapeHtml(question)}</span></div>
+        <div class="qa-question">
+          Q: <span>${escapeHtml(question)}</span>
+          <span class="page-tag">${escapeHtml(selectedPage)}</span>
+        </div>
         <div class="qa-answer loading"><span class="dot-pulse">Thinking</span>...</div>
       `;
       qaHistory.insertBefore(pair, qaHistory.firstChild);
@@ -338,7 +365,6 @@
           body: JSON.stringify({ page: selectedPage, question })
         });
         const data = await res.json();
-
         answerEl.classList.remove('loading');
         if (data.error) {
           answerEl.classList.add('error');
@@ -349,12 +375,50 @@
       } catch (err) {
         answerEl.classList.remove('loading');
         answerEl.classList.add('error');
-        answerEl.textContent = 'Request failed. Is the server running?';
+        answerEl.textContent = 'Request failed.';
       } finally {
         askBtn.disabled = false;
         askBtn.textContent = 'Ask';
       }
     });
+
+    async function toggleHistory() {
+      const btn = document.querySelector('.history-toggle button');
+      if (showingHistory) {
+        showingHistory = false;
+        qaHistory.innerHTML = '';
+        btn.textContent = 'Show my history';
+        return;
+      }
+
+      btn.textContent = 'Loading...';
+      try {
+        const res = await fetch('/history');
+        const data = await res.json();
+        qaHistory.innerHTML = '';
+        showingHistory = true;
+        btn.textContent = 'Hide history';
+
+        if (!data.history.length) {
+          qaHistory.innerHTML = '<div style="color:var(--muted);font-size:13px;text-align:center">No history yet.</div>';
+          return;
+        }
+
+        data.history.forEach(item => {
+          const el = document.createElement('div');
+          el.className = 'history-item';
+          el.innerHTML = `
+            <div class="h-page">${escapeHtml(item.page_title)}</div>
+            <div class="h-question">${escapeHtml(item.question)}</div>
+            <div class="h-answer">${escapeHtml(item.answer.slice(0, 300))}${item.answer.length > 300 ? '...' : ''}</div>
+            <div class="h-time">${new Date(item.created_at).toLocaleString()}</div>
+          `;
+          qaHistory.appendChild(el);
+        });
+      } catch (e) {
+        btn.textContent = 'Show my history';
+      }
+    }
 
     function escapeHtml(str) {
       return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
