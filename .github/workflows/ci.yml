@@ -1,0 +1,50 @@
+# .github/workflows/ci.yml
+#
+# This file tells GitHub Actions what to do every time you push code.
+# GitHub finds this file automatically — no setup needed beyond creating it.
+
+name: CI
+
+# Trigger: run this pipeline on every push to main, and on every pull request.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    # The type of machine to run on — GitHub provides this for free.
+    runs-on: ubuntu-latest
+
+    steps:
+      # Step 1: Check out your code onto the machine.
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      # Step 2: Install Python 3.12.
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Step 3: Cache pip packages so repeat runs are faster.
+      # GitHub saves the installed packages between runs.
+      # If requirements.txt hasn't changed, it skips reinstalling.
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      # Step 4: Install dependencies.
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # Step 5: Run the tests.
+      # Our tests don't need any API keys since they only test
+      # pure Python logic (chunking, scoring, retrieval).
+      - name: Run tests
+        run: pytest tests/ -v
