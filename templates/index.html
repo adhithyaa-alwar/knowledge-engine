@@ -31,7 +31,6 @@
       padding: 0 16px 80px;
     }
 
-    /* Top nav */
     nav {
       width: 100%;
       max-width: 680px;
@@ -174,16 +173,20 @@
       font-weight: 500;
       border-bottom: 1px solid var(--border);
       color: var(--muted);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
     }
 
     .qa-question span { color: var(--text); }
-    .qa-question .page-tag {
+
+    .page-tag {
       font-size: 11px;
       background: var(--accent-dim);
       color: var(--accent);
       padding: 2px 8px;
       border-radius: 4px;
-      margin-left: 8px;
     }
 
     .qa-answer {
@@ -197,7 +200,20 @@
     .qa-answer.loading { color: var(--muted); font-style: italic; }
     .qa-answer.error { color: #f87171; }
 
-    /* History sidebar toggle */
+    /* Streaming cursor */
+    .cursor {
+      display: inline-block;
+      width: 2px;
+      height: 1em;
+      background: var(--accent);
+      margin-left: 2px;
+      vertical-align: text-bottom;
+      animation: blink 0.7s infinite;
+    }
+
+    @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+
+    /* History */
     .history-toggle {
       width: 100%;
       max-width: 680px;
@@ -219,17 +235,47 @@
       background: var(--surface);
       border: 1px solid var(--border);
       border-radius: 10px;
-      padding: 14px 18px;
-      font-size: 13px;
+      overflow: hidden;
+      cursor: pointer;
+      transition: border-color 0.15s;
     }
 
-    .history-item .h-page { color: var(--accent); font-weight: 500; margin-bottom: 4px; }
-    .history-item .h-question { color: var(--text); margin-bottom: 6px; }
-    .history-item .h-answer { color: var(--muted); line-height: 1.6; }
-    .history-item .h-time { color: var(--muted); font-size: 11px; margin-top: 8px; }
+    .history-item:hover { border-color: var(--accent); }
 
-    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
-    .dot-pulse { display: inline-block; animation: pulse 1.2s infinite; }
+    .history-item-header {
+      padding: 14px 18px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .history-item-left { display: flex; flex-direction: column; gap: 4px; }
+    .h-page { color: var(--accent); font-weight: 500; font-size: 13px; }
+    .h-question { color: var(--text); font-size: 13px; }
+    .h-time { color: var(--muted); font-size: 11px; }
+
+    .expand-icon {
+      color: var(--muted);
+      font-size: 18px;
+      flex-shrink: 0;
+      transition: transform 0.2s;
+    }
+
+    .history-item.expanded .expand-icon { transform: rotate(180deg); }
+
+    .history-item-body {
+      display: none;
+      padding: 14px 18px;
+      font-size: 14px;
+      line-height: 1.7;
+      color: var(--text);
+      background: var(--answer-bg);
+      border-top: 1px solid var(--border);
+      white-space: pre-wrap;
+    }
+
+    .history-item.expanded .history-item-body { display: block; }
   </style>
 </head>
 <body>
@@ -247,7 +293,6 @@
     <p>Powered by Groq — your history is saved automatically.</p>
   </header>
 
-  <!-- Step 1: Search -->
   <div class="card">
     <div class="card-label">Choose a Wikipedia page</div>
     <div class="search-row">
@@ -258,7 +303,6 @@
     <div id="selected-page"></div>
   </div>
 
-  <!-- Step 2: Ask -->
   <div class="card" id="question-card">
     <div class="card-label">Ask a question</div>
     <div class="search-row">
@@ -267,12 +311,10 @@
     </div>
   </div>
 
-  <!-- History toggle -->
   <div class="history-toggle">
     <button onclick="toggleHistory()">Show my history</button>
   </div>
 
-  <!-- Q&A / History -->
   <div id="qa-history"></div>
 
   <script>
@@ -340,11 +382,13 @@
     askBtn.addEventListener('click', async () => {
       const question = questionInput.value.trim();
       if (!question || !selectedPage) return;
+
       askBtn.disabled = true;
       askBtn.textContent = 'Thinking...';
       questionInput.value = '';
       showingHistory = false;
 
+      // Create the Q&A pair in the UI
       const pair = document.createElement('div');
       pair.className = 'qa-pair';
       pair.innerHTML = `
@@ -352,30 +396,59 @@
           Q: <span>${escapeHtml(question)}</span>
           <span class="page-tag">${escapeHtml(selectedPage)}</span>
         </div>
-        <div class="qa-answer loading"><span class="dot-pulse">Thinking</span>...</div>
+        <div class="qa-answer"></div>
       `;
       qaHistory.insertBefore(pair, qaHistory.firstChild);
-
       const answerEl = pair.querySelector('.qa-answer');
 
+      // Add blinking cursor while streaming
+      const cursor = document.createElement('span');
+      cursor.className = 'cursor';
+      answerEl.appendChild(cursor);
+
       try {
-        const res = await fetch('/ask', {
+        // Use fetch to POST, then read the SSE stream from the response body
+        const res = await fetch('/ask-stream', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ page: selectedPage, question })
         });
-        const data = await res.json();
-        answerEl.classList.remove('loading');
-        if (data.error) {
-          answerEl.classList.add('error');
-          answerEl.textContent = `Error: ${data.error}`;
-        } else {
-          answerEl.textContent = data.answer;
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop(); // keep incomplete line in buffer
+
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue;
+            const token = line.slice(6); // strip "data: "
+
+            if (token === '[DONE]') {
+              cursor.remove();
+              break;
+            }
+            if (token.startsWith('[ERROR]')) {
+              answerEl.classList.add('error');
+              answerEl.textContent = token.slice(7);
+              cursor.remove();
+              break;
+            }
+
+            // Insert token before the cursor
+            answerEl.insertBefore(document.createTextNode(token), cursor);
+          }
         }
       } catch (err) {
-        answerEl.classList.remove('loading');
         answerEl.classList.add('error');
         answerEl.textContent = 'Request failed.';
+        cursor.remove();
       } finally {
         askBtn.disabled = false;
         askBtn.textContent = 'Ask';
@@ -408,16 +481,25 @@
           const el = document.createElement('div');
           el.className = 'history-item';
           el.innerHTML = `
-            <div class="h-page">${escapeHtml(item.page_title)}</div>
-            <div class="h-question">${escapeHtml(item.question)}</div>
-            <div class="h-answer">${escapeHtml(item.answer.slice(0, 300))}${item.answer.length > 300 ? '...' : ''}</div>
-            <div class="h-time">${new Date(item.created_at).toLocaleString()}</div>
+            <div class="history-item-header" onclick="toggleHistoryItem(this.parentElement)">
+              <div class="history-item-left">
+                <div class="h-page">${escapeHtml(item.page_title)}</div>
+                <div class="h-question">${escapeHtml(item.question)}</div>
+                <div class="h-time">${new Date(item.created_at).toLocaleString()}</div>
+              </div>
+              <div class="expand-icon">⌄</div>
+            </div>
+            <div class="history-item-body">${escapeHtml(item.answer)}</div>
           `;
           qaHistory.appendChild(el);
         });
       } catch (e) {
         btn.textContent = 'Show my history';
       }
+    }
+
+    function toggleHistoryItem(el) {
+      el.classList.toggle('expanded');
     }
 
     function escapeHtml(str) {

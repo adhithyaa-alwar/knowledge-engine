@@ -27,7 +27,7 @@ CHUNK_SIZE_WORDS = 1_500
 
 # How many of the most-relevant chunks we send to the model.
 # Raising this gives the model more context but costs more tokens.
-TOP_K_CHUNKS = 2
+TOP_K_CHUNKS = 3
 
 # ---------------------------------------------------------------------------
 # Wikipedia helpers
@@ -204,14 +204,15 @@ def answer_question(
     # 4. Generate
 
     system_prompt = textwrap.dedent("""
-        You are a precise research assistant. You will be given excerpts from a
-        Wikipedia article and a question. Answer the question using ONLY the
-        information in those excerpts.
+        You are a helpful research assistant. You will be given excerpts from a
+        Wikipedia article and a question. Answer the question directly and concisely.
 
         Rules:
-        - If the excerpts do not contain enough information to answer, say so clearly.
-        - Do not use any outside knowledge or make things up.
-        - Be concise and cite specific details from the text where possible.
+        - Answer directly without preamble like "the excerpts mention" or "based on the provided text"
+        - If the answer is clearly present, state it confidently
+        - If related information is present that helps answer the question indirectly, use it
+        - Only say the information is unavailable if there is truly nothing relevant at all
+        - Be specific and cite details from the text where helpful
     """).strip()
 
     user_message = (
@@ -229,3 +230,46 @@ def answer_question(
         ],
     )
     return response.choices[0].message.content
+
+def answer_question_stream(page_title: str, question: str):
+    """
+    Same as answer_question but streams tokens back as a generator.
+    Each yield is a chunk of text as it arrives from Groq.
+    """
+    text = fetch_wikipedia_text(page_title)
+    chunks = chunk_text(text)
+    relevant = retrieve_relevant_chunks(chunks, question)
+    context = "\n\n---\n\n".join(relevant)
+
+    system_prompt = textwrap.dedent("""
+        You are a helpful research assistant. You will be given excerpts from a
+        Wikipedia article and a question. Answer the question directly and concisely.
+
+        Rules:
+        - Answer directly without preamble like "the excerpts mention" or "based on the provided text"
+        - If the answer is clearly present, state it confidently
+        - If related information is present that helps answer the question indirectly, use it
+        - Only say the information is unavailable if there is truly nothing relevant at all
+        - Be specific and cite details from the text where helpful
+    """).strip()
+
+    user_message = (
+        f"Wikipedia excerpts:\n\n{context}\n\n"
+        f"Question: {question}"
+    )
+
+    client = Groq()
+    stream = client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        max_tokens=1024,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message},
+        ],
+        stream=True,  # this is the only difference
+    )
+
+    for chunk in stream:
+        token = chunk.choices[0].delta.content
+        if token:
+            yield token

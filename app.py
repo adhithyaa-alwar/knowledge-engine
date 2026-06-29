@@ -2,16 +2,16 @@
 app.py
 
 Flask web server for the Knowledge Engine.
-Includes authentication and password reset via Supabase.
+Includes authentication, password reset, and streaming responses via Supabase and Groq.
 """
 
 import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
 
-from flask import Flask, render_template, request, jsonify, session, redirect, url_for
+from flask import Flask, render_template, request, jsonify, session, redirect, url_for, Response, stream_with_context
 from dotenv import load_dotenv
-from wiki_qa import search_wikipedia, answer_question
+from wiki_qa import search_wikipedia, answer_question, answer_question_stream
 from auth import sign_up, sign_in, sign_out, get_user, request_password_reset, update_password
 from db import save_search, get_history
 
@@ -164,6 +164,51 @@ def ask():
         return jsonify({"answer": answer})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/ask-stream", methods=["POST"])
+@login_required
+def ask_stream():
+    page = request.json.get("page", "").strip()
+    question = request.json.get("question", "").strip()
+    if not page or not question:
+        return jsonify({"error": "Missing page or question"}), 400
+
+    # Capture session values before entering the generator
+    # (Flask session is not accessible inside a generator)
+    access_token = session["access_token"]
+    user_id = session["user_id"]
+
+    def generate():
+        full_answer = []
+        try:
+            for token in answer_question_stream(page, question):
+                full_answer.append(token)
+                # SSE format: each message must start with "data: " and end with "\n\n"
+                yield f"data: {token}\n\n"
+        except Exception as e:
+            yield f"data: [ERROR] {str(e)}\n\n"
+        finally:
+            # Save the complete answer to the database once streaming is done
+            if full_answer:
+                save_search(
+                    access_token=access_token,
+                    user_id=user_id,
+                    page_title=page,
+                    question=question,
+                    answer="".join(full_answer)
+                )
+            # Signal to the frontend that streaming is complete
+            yield "data: [DONE]\n\n"
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no"
+        }
+    )
 
 
 @app.route("/history", methods=["GET"])
