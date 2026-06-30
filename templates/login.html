@@ -4,6 +4,14 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Knowledge Engine — Sign In</title>
+  <script>
+    // If Supabase redirected here with a password recovery token
+    // (instead of /forgot-password), forward it to the right page
+    // so the reset password form can pick it up.
+    if (window.location.hash.includes('type=recovery')) {
+      window.location.replace('/forgot-password' + window.location.hash);
+    }
+  </script>
   <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Inter:wght@400;500&display=swap" rel="stylesheet" />
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
