@@ -2,7 +2,11 @@
 app.py
 
 Flask web server for the Knowledge Engine.
-Includes authentication, password reset, and streaming responses via Supabase and Groq.
+
+The pipeline is now properly separated:
+  ingestion.py  -- fetches and stores article chunks
+  retrieval.py  -- loads and scores chunks against a question
+  wiki_qa.py    -- builds the prompt and calls Groq
 """
 
 import sys
@@ -11,7 +15,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
 
 from flask import Flask, render_template, request, jsonify, session, redirect, url_for, Response, stream_with_context
 from dotenv import load_dotenv
+
 from wiki_qa import search_wikipedia, answer_question, answer_question_stream
+from ingestion import ensure_ingested
+from retrieval import retrieve_relevant_chunks
 from auth import sign_up, sign_in, sign_out, get_user, request_password_reset, update_password
 from db import save_search, get_history
 
@@ -57,7 +64,7 @@ def login():
 def signup():
     data = request.json
     try:
-        result = sign_up(data["email"], data["password"])
+        sign_up(data["email"], data["password"])
         return jsonify({"message": "Account created! Please check your email to confirm, then log in."})
     except Exception as e:
         return jsonify({"error": str(e)}), 400
@@ -145,27 +152,6 @@ def search():
         return jsonify({"error": str(e)}), 500
 
 
-@app.route("/ask", methods=["POST"])
-@login_required
-def ask():
-    page = request.json.get("page", "").strip()
-    question = request.json.get("question", "").strip()
-    if not page or not question:
-        return jsonify({"error": "Missing page or question"}), 400
-    try:
-        answer = answer_question(page, question)
-        save_search(
-            access_token=session["access_token"],
-            user_id=session["user_id"],
-            page_title=page,
-            question=question,
-            answer=answer
-        )
-        return jsonify({"answer": answer})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
 @app.route("/ask-stream", methods=["POST"])
 @login_required
 def ask_stream():
@@ -174,22 +160,26 @@ def ask_stream():
     if not page or not question:
         return jsonify({"error": "Missing page or question"}), 400
 
-    # Capture session values before entering the generator
-    # (Flask session is not accessible inside a generator)
     access_token = session["access_token"]
     user_id = session["user_id"]
 
     def generate():
         full_answer = []
         try:
-            for token in answer_question_stream(page, question):
+            # Step 1: Ingestion -- fetch and store chunks if not already done
+            ensure_ingested(page)
+
+            # Step 2: Retrieval -- load and rank chunks from Supabase
+            chunks = retrieve_relevant_chunks(page, question)
+
+            # Step 3: Generation -- stream the answer from Groq
+            for token in answer_question_stream(chunks, question):
                 full_answer.append(token)
-                # SSE format: each message must start with "data: " and end with "\n\n"
                 yield f"data: {token}\n\n"
+
         except Exception as e:
             yield f"data: [ERROR] {str(e)}\n\n"
         finally:
-            # Save the complete answer to the database once streaming is done
             if full_answer:
                 save_search(
                     access_token=access_token,
@@ -198,7 +188,6 @@ def ask_stream():
                     question=question,
                     answer="".join(full_answer)
                 )
-            # Signal to the frontend that streaming is complete
             yield "data: [DONE]\n\n"
 
     return Response(
@@ -219,4 +208,5 @@ def history():
 
 
 if __name__ == "__main__":
-    app.run(debug=True, host="0.0.0.0")
+    port = int(os.environ.get("PORT", 5000))
+    app.run(debug=False, host="0.0.0.0", port=port)
