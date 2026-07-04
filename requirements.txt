@@ -5,3 +5,4 @@ flask>=3.0.0
 supabase>=2.0.0
 upstash-redis>=1.0.0
 pytest>=8.0.0
+gunicorn>=21.0.0
