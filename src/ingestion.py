@@ -4,13 +4,14 @@ ingestion.py
 Handles data ingestion: fetching Wikipedia articles, chunking them,
 and storing the chunks in Supabase for later retrieval.
 
-New in this version:
-- Checks Wikipedia's last edit timestamp before deciding to re-ingest.
-  If the stored chunks are newer than the last Wikipedia edit, we skip
-  re-ingestion entirely. If Wikipedia has been updated since we last
-  ingested, we delete the old chunks and re-ingest fresh ones.
-- Updates last_accessed_at on every retrieval so the cleanup job
-  knows which articles are still being used.
+This version includes:
+- Wikipedia freshness check: compares the article's last edit timestamp
+  against our stored chunk timestamp before deciding to re-ingest.
+- Redis cache invalidation: when re-ingestion is triggered because
+  Wikipedia changed, we delete the Redis cache first so fetch_wikipedia_text
+  pulls the latest version rather than returning stale cached content.
+- last_accessed_at tracking: updated on every retrieval so the pg_cron
+  cleanup job knows which articles are still being used.
 """
 
 import os
@@ -33,10 +34,70 @@ def get_supabase_client() -> Client:
     )
 
 
+def get_redis_client():
+    """
+    Create a Redis client if credentials are available.
+    Returns None gracefully if Redis is not configured,
+    so the app continues working without caching.
+    """
+    url = os.getenv("UPSTASH_REDIS_REST_URL")
+    token = os.getenv("UPSTASH_REDIS_REST_TOKEN")
+    if not url or not token:
+        return None
+    try:
+        from upstash_redis import Redis
+        return Redis(url=url, token=token)
+    except Exception as e:
+        print(f"Could not connect to Redis: {e}")
+        return None
+
+
+def invalidate_redis_cache(title: str) -> None:
+    """
+    Delete the cached article text from Redis for a given title.
+
+    This is called before re-ingestion when we know Wikipedia has been
+    updated. Without this step, fetch_wikipedia_text would return the
+    old cached version from Redis even though the article changed,
+    causing us to re-ingest stale content.
+
+    Redis has no way to know the article changed on its own -- it only
+    tracks time via TTL. The application code is responsible for
+    telling Redis when a cache entry is no longer valid.
+    """
+    redis = get_redis_client()
+    if not redis:
+        return
+    cache_key = f"wiki:{title.lower()}"
+    try:
+        redis.delete(cache_key)
+        print(f"Deleted Redis cache for '{title}'.")
+    except Exception as e:
+        # Non-critical: if the delete fails, fetch_wikipedia_text will
+        # just return the cached version. The next time the 24h TTL
+        # expires, Redis will evict it naturally.
+        print(f"Could not delete Redis cache for '{title}': {e}")
+
+
 def fetch_wikipedia_text(title: str) -> str:
     """
     Fetch the full plain-text content of a Wikipedia article.
+    Checks Redis first. If cached, returns instantly.
+    If not cached, fetches from Wikipedia and stores in Redis.
     """
+    cache_key = f"wiki:{title.lower()}"
+    redis = get_redis_client()
+
+    # Try Redis first.
+    if redis:
+        try:
+            cached = redis.get(cache_key)
+            if cached:
+                return cached
+        except Exception as e:
+            print(f"Redis read failed, falling back to Wikipedia: {e}")
+
+    # Cache miss or Redis unavailable -- fetch from Wikipedia.
     params = {
         "action": "query",
         "titles": title,
@@ -55,7 +116,16 @@ def fetch_wikipedia_text(title: str) -> str:
     if "missing" in page:
         raise ValueError(f"Wikipedia page not found: '{title}'")
 
-    return page["extract"]
+    text = page["extract"]
+
+    # Store in Redis for next time. TTL of 24 hours (86400 seconds).
+    if redis:
+        try:
+            redis.set(cache_key, text, ex=86_400)
+        except Exception as e:
+            print(f"Redis write failed, continuing without caching: {e}")
+
+    return text
 
 
 def fetch_last_edit_timestamp(title: str) -> str | None:
@@ -63,10 +133,10 @@ def fetch_last_edit_timestamp(title: str) -> str | None:
     Fetch the timestamp of the most recent edit to a Wikipedia article.
 
     Wikipedia's revisions API returns the exact datetime the article
-    was last modified. We use this to decide whether our stored chunks
-    are still current or need to be refreshed.
+    was last modified. We compare this against our stored chunk timestamp
+    to decide whether re-ingestion is needed.
 
-    Returns an ISO 8601 timestamp string like "2024-03-15T10:22:00Z",
+    Returns an ISO 8601 string like "2024-03-15T10:22:00Z",
     or None if the request fails.
     """
     params = {
@@ -74,7 +144,7 @@ def fetch_last_edit_timestamp(title: str) -> str | None:
         "titles": title,
         "prop": "revisions",
         "rvprop": "timestamp",
-        "rvlimit": 1,           # we only need the most recent edit
+        "rvlimit": 1,
         "format": "json",
     }
     headers = {"User-Agent": "knowledge-engine/1.0 (github.com/adhithyaa-alwar/knowledge-engine)"}
@@ -97,7 +167,7 @@ def get_stored_chunk_timestamp(title: str) -> str | None:
     This tells us when we last ingested the article. We compare it
     against Wikipedia's last edit timestamp to decide freshness.
 
-    Returns an ISO 8601 timestamp string, or None if no chunks exist.
+    Returns an ISO 8601 string, or None if no chunks exist yet.
     """
     client = get_supabase_client()
     result = (
@@ -117,47 +187,45 @@ def chunks_are_fresh(title: str) -> bool:
     """
     Return True if our stored chunks are up to date with Wikipedia.
 
-    The logic:
-    1. Get the timestamp of our most recently stored chunk.
-    2. If no chunks exist, return False (need to ingest).
-    3. Get Wikipedia's last edit timestamp.
-    4. If we can't fetch Wikipedia's timestamp, assume chunks are fresh
-       to avoid unnecessary re-ingestion on API failures.
-    5. Compare: if our chunks were created after Wikipedia's last edit,
-       the content has not changed and we are fresh. Otherwise, stale.
+    Logic:
+    1. Get our stored chunk timestamp. If none, return False (need to ingest).
+    2. Get Wikipedia's last edit timestamp.
+    3. If Wikipedia's timestamp is unavailable, assume fresh to avoid
+       unnecessary re-ingestion on API failures.
+    4. If our chunks were created after Wikipedia's last edit, we are fresh.
+       Otherwise, stale and re-ingestion is needed.
     """
     stored_timestamp = get_stored_chunk_timestamp(title)
 
-    # No chunks stored yet -- definitely need to ingest.
+    # No chunks stored at all -- must ingest.
     if not stored_timestamp:
         return False
 
     wiki_timestamp = fetch_last_edit_timestamp(title)
 
-    # If we cannot reach Wikipedia's revision API, assume fresh
-    # rather than triggering a potentially unnecessary re-ingest.
+    # Cannot reach Wikipedia's revision API -- assume fresh rather than
+    # triggering a potentially unnecessary re-ingest.
     if not wiki_timestamp:
         return True
 
-    # Parse both timestamps to timezone-aware datetimes for comparison.
+    # Parse both to timezone-aware datetimes so comparison works
+    # regardless of format differences between Supabase and Wikipedia.
     stored_dt = dateparser.parse(stored_timestamp)
     wiki_dt = dateparser.parse(wiki_timestamp)
 
-    # Ensure both are timezone-aware so comparison works correctly
-    # regardless of what format Supabase or Wikipedia returns.
     if stored_dt.tzinfo is None:
         stored_dt = stored_dt.replace(tzinfo=timezone.utc)
     if wiki_dt.tzinfo is None:
         wiki_dt = wiki_dt.replace(tzinfo=timezone.utc)
 
-    # Our chunks are fresh if they were stored after the last Wikipedia edit.
     return stored_dt >= wiki_dt
 
 
 def chunk_text(text: str, chunk_size: int = CHUNK_SIZE_WORDS) -> list[str]:
     """
     Split text into chunks of roughly chunk_size words each,
-    splitting on paragraph boundaries where possible.
+    splitting on paragraph boundaries where possible so chunks
+    do not cut sentences in half.
     """
     paragraphs = text.split("\n\n")
     chunks: list[str] = []
@@ -179,19 +247,34 @@ def chunk_text(text: str, chunk_size: int = CHUNK_SIZE_WORDS) -> list[str]:
 def ingest_article(title: str) -> int:
     """
     Fetch a Wikipedia article, chunk it, and store the chunks in Supabase.
-    Deletes any existing chunks for this article before inserting new ones,
-    so re-ingestion always produces a clean, up-to-date set of chunks.
+
+    Before fetching, we delete the Redis cache for this article so that
+    fetch_wikipedia_text is forced to pull the latest version from Wikipedia
+    rather than returning whatever was previously cached.
+
+    This is critical when re-ingesting because Wikipedia changed: without
+    invalidating Redis first, we would re-chunk and store the same stale
+    content that triggered the re-ingestion in the first place.
+
     Returns the number of chunks stored.
     """
+    # Step 1: Invalidate Redis cache so we get the freshest content.
+    invalidate_redis_cache(title)
+
+    # Step 2: Fetch fresh content from Wikipedia (Redis is now empty for this key).
     text = fetch_wikipedia_text(title)
+
+    # Step 3: Split into chunks.
     chunks = chunk_text(text)
 
     client = get_supabase_client()
 
-    # Delete old chunks before inserting fresh ones.
-    # This handles re-ingestion after a Wikipedia update cleanly.
+    # Step 4: Delete old chunks before inserting new ones.
+    # This ensures re-ingestion always produces a clean, complete set.
     client.table("article_chunks").delete().eq("article_title", title.lower()).execute()
 
+    # Step 5: Insert all new chunks in a single batch operation.
+    # Batching is much faster than inserting one row at a time.
     rows = [
         {
             "article_title": title.lower(),
@@ -200,7 +283,6 @@ def ingest_article(title: str) -> int:
         }
         for i, chunk in enumerate(chunks)
     ]
-
     client.table("article_chunks").insert(rows).execute()
 
     return len(chunks)
@@ -210,13 +292,9 @@ def ensure_ingested(title: str) -> None:
     """
     The main entry point called by app.py before every question.
 
-    Checks whether stored chunks are fresh relative to Wikipedia's
-    last edit. Re-ingests only when necessary: either no chunks exist,
-    or Wikipedia has been updated since we last ingested.
-
-    This replaces the old simple existence check with a smarter
-    freshness check that keeps content accurate without re-ingesting
-    on every request.
+    Checks freshness using Wikipedia's revision timestamp. Re-ingests
+    only when necessary: either no chunks exist, or Wikipedia has been
+    updated since we last ingested. Fresh articles are skipped entirely.
     """
     if not chunks_are_fresh(title):
         print(f"Ingesting '{title}' -- no chunks or Wikipedia has been updated.")
