@@ -3,10 +3,11 @@ app.py
 
 Flask web server for the Knowledge Engine.
 
-The pipeline is now properly separated:
-  ingestion.py  -- fetches and stores article chunks
-  retrieval.py  -- loads and scores chunks against a question
-  wiki_qa.py    -- builds the prompt and calls Groq
+Redis is used for two real purposes:
+- Search suggestion caching: Wikipedia OpenSearch results are cached
+  for 1 hour so repeated searches for the same query skip the API call.
+- Rate limiting: users are limited to 20 questions per minute to prevent
+  abuse and protect the Groq API quota.
 """
 
 import sys
@@ -26,6 +27,112 @@ load_dotenv()
 
 app = Flask(__name__)
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "dev-secret-change-in-production")
+
+
+# ---------------------------------------------------------------------------
+# Redis client
+# ---------------------------------------------------------------------------
+
+def get_redis_client():
+    """
+    Create a Redis client if credentials are available.
+    Returns None gracefully if Redis is not configured so the app
+    continues working without caching or rate limiting.
+    """
+    url = os.getenv("UPSTASH_REDIS_REST_URL")
+    token = os.getenv("UPSTASH_REDIS_REST_TOKEN")
+    if not url or not token:
+        return None
+    try:
+        from upstash_redis import Redis
+        return Redis(url=url, token=token)
+    except Exception as e:
+        print(f"Could not connect to Redis: {e}")
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Rate limiting
+# ---------------------------------------------------------------------------
+
+RATE_LIMIT_REQUESTS = 20   # max requests per window
+RATE_LIMIT_WINDOW = 60     # window size in seconds
+
+
+def check_rate_limit(user_id: str) -> bool:
+    """
+    Check whether the user has exceeded the rate limit.
+
+    Uses Redis to track request counts per user within a rolling window.
+    Each request increments a counter keyed to the user ID. The counter
+    expires automatically after the window closes, resetting the count.
+
+    incr is atomic in Redis, meaning concurrent requests are counted
+    correctly without race conditions.
+
+    Returns True if the request is allowed, False if the limit is exceeded.
+    """
+    redis = get_redis_client()
+
+    # If Redis is unavailable, allow the request rather than blocking everyone.
+    if not redis:
+        return True
+
+    key = f"rate_limit:{user_id}"
+    try:
+        count = redis.incr(key)
+        # Set the TTL only on the first request so the window starts then.
+        # If we set it on every request, the window would never close.
+        if count == 1:
+            redis.expire(key, RATE_LIMIT_WINDOW)
+        return count <= RATE_LIMIT_REQUESTS
+    except Exception as e:
+        print(f"Rate limit check failed: {e}")
+        # If the check itself fails, allow the request.
+        return True
+
+
+# ---------------------------------------------------------------------------
+# Search suggestion caching
+# ---------------------------------------------------------------------------
+
+SEARCH_CACHE_TTL = 3600    # cache search results for 1 hour
+
+
+def get_cached_search(query: str) -> list[str] | None:
+    """
+    Check Redis for cached search suggestions for this query.
+    Returns the cached list of titles, or None if not cached.
+
+    Search suggestions are safe to cache because Wikipedia article
+    titles rarely change. A 1 hour TTL means stale results are
+    unlikely and the cache stays reasonably fresh.
+    """
+    redis = get_redis_client()
+    if not redis:
+        return None
+    try:
+        import json
+        cached = redis.get(f"search:{query.lower()}")
+        if cached:
+            return json.loads(cached)
+    except Exception as e:
+        print(f"Search cache read failed: {e}")
+    return None
+
+
+def cache_search_results(query: str, results: list[str]) -> None:
+    """
+    Store search suggestions in Redis with a 1 hour TTL.
+    """
+    redis = get_redis_client()
+    if not redis:
+        return
+    try:
+        import json
+        redis.set(f"search:{query.lower()}", json.dumps(results), ex=SEARCH_CACHE_TTL)
+    except Exception as e:
+        print(f"Search cache write failed: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -145,8 +252,19 @@ def search():
     query = request.json.get("query", "").strip()
     if not query:
         return jsonify({"error": "No query provided"}), 400
+
+    # Check Redis cache first.
+    # If we have cached results for this query, return them instantly
+    # without calling Wikipedia's API.
+    cached = get_cached_search(query)
+    if cached:
+        print(f"Search cache hit for '{query}'.")
+        return jsonify({"results": cached})
+
+    # Cache miss: call Wikipedia and store the results.
     try:
         results = search_wikipedia(query)
+        cache_search_results(query, results)
         return jsonify({"results": results})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -160,13 +278,18 @@ def ask_stream():
     if not page or not question:
         return jsonify({"error": "Missing page or question"}), 400
 
+    # Check rate limit before doing any expensive work.
+    # If the user has exceeded 20 requests per minute, reject immediately.
+    user_id = session.get("user_id")
+    if not check_rate_limit(user_id):
+        return jsonify({"error": "Too many requests. Please wait a moment before asking again."}), 429
+
     access_token = session["access_token"]
-    user_id = session["user_id"]
 
     def generate():
         full_answer = []
         try:
-            # Step 1: Ingestion -- fetch and store chunks if not already done
+            # Step 1: Ingestion -- ingest or verify freshness
             ensure_ingested(page)
 
             # Step 2: Retrieval -- load and rank chunks from Supabase
